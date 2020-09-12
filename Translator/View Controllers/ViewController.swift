@@ -8,6 +8,7 @@
 
 import UIKit
 import Speech
+import AVKit
 
 class ViewController: UIViewController, SFSpeechRecognizerDelegate {
 
@@ -18,6 +19,11 @@ class ViewController: UIViewController, SFSpeechRecognizerDelegate {
     public var toLanguage: String?
     public var fromLanguage: String?
 
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let audioEngine = AVAudioEngine()
+    
     // MARK: - Instances
     
     private let networkController = NetworkController()
@@ -34,15 +40,18 @@ class ViewController: UIViewController, SFSpeechRecognizerDelegate {
     
     @IBAction func translateBtnPressed(_ sender: UIButton) {
         isRecording.toggle()
-        
-        networkController.sendTextToTranslate(text: "This is so cool", toLanguage: toLanguage?.uppercased() ?? "ENGLISH", fromLanguage: fromLanguage?.uppercased() ?? "FRENCH")
-        
+                
         if isRecording {
             titleLbl.text = "Listening..."
             buttonPress(sender: sender, pressedColor: Colors.pressedColor, bool: isRecording)
+            
+            // Speech to text
+            startRecording()
         } else {
             titleLbl.text = "Ready to Translate"
             buttonPress(sender: sender, pressedColor: Colors.normalColor, bool: isRecording)
+            
+            networkController.sendTextToTranslate(text: textView.text, toLanguage: toLanguage?.uppercased() ?? "ENGLISH", fromLanguage: fromLanguage?.uppercased() ?? "FRENCH")
         }
     }
     
@@ -59,6 +68,7 @@ class ViewController: UIViewController, SFSpeechRecognizerDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
+        setupSpeech()
     }
     
     
@@ -110,6 +120,77 @@ class ViewController: UIViewController, SFSpeechRecognizerDelegate {
         }) { (_) in
             UIView.animate(withDuration: 0.15) {
                 sender.transform = .identity
+            }
+        }
+    }
+    
+    // MARK: - Speech
+    
+    private func startRecording() {
+        if recognitionTask != nil {
+            recognitionTask?.cancel()
+            recognitionTask = nil
+        }
+
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(AVAudioSession.Category.record)
+            try audioSession.setMode(AVAudioSession.Mode.measurement)
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("audioSession properties weren't set because of an error.")
+        }
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        let inputNode = audioEngine.inputNode
+
+        guard let recognitionRequest = recognitionRequest else {fatalError("Unable to create an SFSpeechAudioBufferRecognitionRequest object")}
+        recognitionRequest.shouldReportPartialResults = true
+
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest, resultHandler: { (result, error) in
+            var isFinal = false
+            if result != nil {
+                self.textView.text = result?.bestTranscription.formattedString
+                isFinal = (result?.isFinal)!
+            }
+            if error != nil || isFinal {
+                self.audioEngine.stop()
+                inputNode.removeTap(onBus: 0)
+                self.recognitionRequest = nil
+                self.recognitionTask = nil
+//                self.startStopBtn.isEnabled = true
+            }
+        })
+
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { (buffer, when) in
+            self.recognitionRequest?.append(buffer)
+        }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            print("audioEngine couldn't start because of an error.")
+        }
+        textView.text = "Say something, I'm listening!"
+    }
+    
+    private func setupSpeech() {
+        speechRecognizer?.delegate = self
+        SFSpeechRecognizer.requestAuthorization { (authStatus) in
+            switch authStatus {
+            case .authorized:
+//                isButtonEnabled = true
+                print("Authorized")
+            case .denied:
+//                isButtonEnabled = false
+                print("User denied access to speech recognition")
+            case .restricted:
+//                isButtonEnabled = false
+                print("Speech recognition restricted on this device")
+            case .notDetermined:
+//                isButtonEnabled = false
+                print("Speech recognition not yet authorized")
+            @unknown default: break
             }
         }
     }
